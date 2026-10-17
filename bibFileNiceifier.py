@@ -329,52 +329,6 @@ def sortEntryTitles(titles: list[str]) -> tuple[npt.NDArray, npt.NDArray]:
 
     return sortedTitles, sortInds
 
-def sortEntryTitles_old(titles: list[str]) -> tuple[list[str], npt.NDArray]:
-    """
-    Sort entry titles in author year order in the format "<author>_<year>", "<author1>-<author2>_<year>", or "<author1>-et_<year>" depending on how many authors are listed
-    """
-    # TODO Make this more efficient
-    def insertTitle(titleList: list[str], indexMap: npt.NDArray, title: str, index: int, etBool: int) -> None:
-        if etBool:
-            title = title.split('-')[0] + 'et' + '_' + title.split('_')[1]
-        titleList.insert(index, title)
-
-        indexMap[indexMap >= index] += 1
-        indexMap = np.append(indexMap, [index])
-        return titleList, indexMap
-
-    def lowLevelSorting(title: str, sortedTitles: list[str], indexMap: npt.NDArray, etBool: bool) -> tuple[list[str], npt.NDArray]:
-        for i, existingTitle in enumerate(copy(sortedTitles)):
-            if title.split('_')[0] > existingTitle.split('_')[0]:
-                sortedTitles, indexMap = insertTitle(sortedTitles, indexMap, title, i + 1, etBool)
-            elif title.split('_')[0] == existingTitle.split('_')[0]: # Same author(s)
-                if title.split('_')[1] > existingTitle.split('_')[1]: # Later year
-                    sortedTitles, indexMap = insertTitle(sortedTitles, indexMap, title, i + 1, etBool)
-                elif title.split('_')[1] == existingTitle.split('_')[1]: # Same year
-                    try:
-                        identifier = existingTitle.split('_')[2]
-                        title = title.split('_')[0] + '_' + title.split('_')[1] + '_' + str(int(identifier) + 1)
-                        lowLevelSorting(title, sortedTitles, indexMap, etBool)
-                    except IndexError:
-                        title = title.split('_')[0] + '_' + title.split('_')[1] + '_0'
-                        lowLevelSorting(title, sortedTitles, indexMap, etBool)
-                else: # Earlier year
-                    sortedTitles, indexMap = insertTitle(sortedTitles, indexMap, title, i, etBool)
-            else:
-                sortedTitles, indexMap = insertTitle(sortedTitles, indexMap, title, i, etBool)
-        return sortedTitles, indexMap
-
-    etReplacement = '-zzzzz'
-    sortedTitles = [titles[0]]
-    indexMap = np.array([0], dtype=int)
-    for title in titles[1:]:
-        etBool = '-et_' in title
-        if etBool:
-            title = title.split('-')[0] + etReplacement + '_' + title.split('_')[1]
-        sortedTitles, indexMap = lowLevelSorting(title, sortedTitles, indexMap, etBool)
-
-    return sortedTitles, indexMap
-
 def niceifyEntry(entry: str, entryTitle: str|None = None) -> str:
     """
     Returns a standardized string of a provided entry. The entryTitle argument can be optionally be provided to override the default (useful when adding a unique identifier to avoid repeats)
