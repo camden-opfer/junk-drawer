@@ -1,0 +1,214 @@
+"""
+Created: Camden Opfer, June 2025
+Modified: Camden Opfer, March 2026
+
+A variety of utility functions that are helpful for getting Python to do things, but not necessarily specific to computational climate, or even science in general.
+"""
+# Imports for typing
+from typing import Sequence
+from logging import Logger as _Logger
+from logging import INFO as _INFO
+
+def createLogger(logFile:str|None = None, loggerName:str = __name__, propagatedLoggerNames:Sequence[str]|None = None) -> _Logger:
+    """
+    Uses the logging package to create a logger, which also handles warnings and errors. Optionally, write logs to a file, and/or propagate other loggers to this new logger.
+
+    Note: This function will override some basic settings about where warnings and errors are reported, and is intended to be used as a main logger. If you have other important loggers, this function may cause unwanted behaviour.
+
+    :param logFile: A file to which the log is written. Default is None, so output is only printed to the terminal.
+    :type logFile: str or None, optional
+    :param loggerName: The name of the created logger. Default is __name__, which evaluates to 'cccs.utils'.
+    :type loggerName: str, optional
+    :param propagatedLoggerNames: A sequence of additional loggers to propagate into this new one.
+    :type propagatedLoggerNames: Sequence[str] or None, optional
+    """
+    import logging
+    import sys
+    import os
+
+    # Argument handling
+    if propagatedLoggerNames is None:
+        propagatedLoggerNames = set()
+    else:
+        propagatedLoggerNames = set(propagatedLoggerNames)
+
+    # Basic logger setup
+    logger = logging.getLogger(loggerName)
+    logger.setLevel(logging.DEBUG)
+    logger.handlers.clear()
+
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+
+    # Log to terminal (a stream to sys.stderr)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    if logFile is None:
+        ch.setLevel(logging.DEBUG)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    # Log to a file
+    if logFile is not None:
+        logDir = os.path.dirname(logFile)
+        if logDir: # Log is not in the working directory, so its directory may not exist
+            os.makedirs(logDir, exist_ok=True)
+
+        fh = logging.FileHandler(logFile, mode='a')
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
+    # Log warnings
+    logging.captureWarnings(True)
+    propagatedLoggerNames.add('py.warnings')
+
+    # Log uncaught exceptions
+    def logException(excType, excValue, excTraceback):
+        """
+        Intented to overwrite the built-in sys.excepthook function so that exceptions are nicely funneled into the logger
+        """
+        if issubclass(excType, KeyboardInterrupt):
+            sys.__excepthook__(excType, excValue, excTraceback)
+            return
+
+        logger.error('Uncaught Exception:', exc_info=(excType, excValue, excTraceback))
+    sys.excepthook = logException
+
+    # Propagate other packages' loggers to this new logger
+    def propagateLogger(loggerName):
+        """
+        Checks if the fh and ch handlers are already used by the provided logger and, if not, adds them.
+        """
+        propagatedLogger = logging.getLogger(loggerName)
+
+        existingHandlers = propagatedLogger.handlers
+        needCh = True
+        for existingHandler in existingHandlers:
+            if isinstance(existingHandler, logging.StreamHandler) and existingHandler.stream == ch.stream:
+                needCh = False
+        if needCh:
+            propagatedLogger.addHandler(ch)
+
+        if logFile is None:
+            return
+
+        needFh = True
+        for existingHandler in existingHandlers:
+            if isinstance(existingHandler, logging.FileHandler) and existingHandler.baseFilename == fh.baseFilename:
+                needFh = False
+
+        if logFile is not None and needFh:
+            propagatedLogger.addHandler(fh)
+
+    for propagatedLoggerName in propagatedLoggerNames:
+        propagateLogger(propagatedLoggerName)
+
+    return logger
+
+def log(message:str|Exception, logLevel:int|str=_INFO, loggerName:str=__name__):
+    """
+    Logs a message, either by printing (if no logger of the provided name exists) or by logging with a specified severity level.
+
+    :param message: The message to log. If an exception (usually in a try/except clause), traceback information will be retained.
+    :type message: str or Exception
+    :param logLevel: Severity of logged item. In order of importance, should be one of 'debug', 'info', 'warning', 'error', or 'critical'. These strings will be mapped to their corresponding integer levels, or you can provide an integer (e.g. logging.DEBUF or logging.WARNING). Default is logging.INFO.
+    :type logLevel: int or str, optional
+    :param loggerName: The internal name of the logger to use. Default is __name__, which will be 'cccs.utils'.
+    :str loggerName: str, optional
+    """
+    import logging
+
+    logger = logging.getLogger(loggerName)
+
+    if not logger.hasHandlers(): # Logger has not been initialized
+        createLogger(loggerName=loggerName)
+        logger = logging.getLogger(loggerName)
+
+    if isinstance(message, Exception):
+        logger.exception(message)
+        return
+
+    if isinstance(logLevel, str):
+        try:
+            strToLogLevel = {'debug':logging.DEBUG, 'info':logging.INFO, 'warning':logging.WARNING, 'error':logging.ERROR, 'critical':logging.CRITICAL}
+            logLevel = strToLogLevel[logLevel.lower()]
+        except KeyError:
+            logger.log(level = logging.WARNING, msg = f'Invalid log level "{logLevel}". Will default to info.')
+            logLevel = logging.INFO
+        except Exception as e:
+            logger.exception(e)
+            logger.log(level = logging.WARNING, msg = f'Something unexpected happened when parsing log level "{logLevel}". Will default to info.')
+            logLevel = logging.INFO
+
+    if not isinstance(logLevel, int):
+        logger.log(level = logging.WARNING, msg = f'Got unexpected log level "{logLevel}". Will default to info.')
+        logLevel = logging.INFO
+
+    logger.log(level=logLevel, msg=message)
+
+def timedInput(prompt, default='y', timeout=30, checkInterval=0.05):
+    """
+    A function that allows the user to provide input, but assumes a default value after 'timeout' seconds if no input is provided. Helpful when running code overnight, when API requests and such should be automatically retried.
+
+    checkInterval is used only for Windows machines, and is the precision with which this function checks for keyboard interupts, closing use of the 'enter' key, and for the function having timed out.
+
+    Derived from the inputtimeout package (https://github.com/johejo/inputimeout/tree/master), but adds a default output rather than triggering an error if no input is provided.
+    """
+    import sys
+    import os
+
+    def echo(string):
+        sys.stdout.write(string)
+        sys.stdout.flush()
+
+    if os.name == 'posix':
+        import termios # pylint: disable=import-error
+        import selectors
+
+        LF = '\n'
+
+        echo(prompt)
+        sel = selectors.DefaultSelector()
+        sel.register(sys.stdin, selectors.EVENT_READ)
+        events = sel.select(timeout)
+
+        if events:
+            key, _ = events[0]
+            return key.fileobj.readline().rstrip(LF)
+        else:
+            echo(LF)
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        return default
+
+    else:
+        import msvcrt # pylint: disable=import-error
+        import time
+
+        SP = ' '
+        CR = '\r'
+        LF = '\n'
+        CRLF = CR + LF
+
+        echo(prompt)
+        begin = time.monotonic()
+        end = begin + timeout
+        line = ''
+
+        while time.monotonic() < end:
+            if msvcrt.kbhit():
+                c = msvcrt.getwche()
+                if c in (CR, LF):
+                    echo(CRLF)
+                    return line
+                if c == '\003':
+                    raise KeyboardInterrupt
+                if c == '\b':
+                    line = line[:-1]
+                    cover = SP * len(prompt + line + SP)
+                    echo(''.join([CR, cover, CR, prompt, line]))
+                else:
+                    line += c
+            time.sleep(checkInterval)
+
+        echo(CRLF)
+        return default
